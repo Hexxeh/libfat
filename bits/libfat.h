@@ -302,6 +302,7 @@ typedef struct
 {
   /* Data referring to the hosting block device */
   DWORD      blkDevFd; 			/* File Descriptor of the block device hosting the volume   */
+  off64_t fs_offset;        /* Offset of the filesystem within the file descriptor */
   mode_t	 mode;				/* Permissions for the volume								*/
   uid_t      uid;     			/* user ID of owner */
   gid_t      gid;     			/* group ID of owner */

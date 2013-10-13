@@ -253,7 +253,7 @@ off64_t fat32_cluster_off(Volume_t *V, DWORD N, int FatNum) {
   off64_t fatsz = V->fatsz;
   off64_t entry = N;
   off64_t entrysz = 4;
-  return ( rsvdbc + ( fatn * fatsz )  + ( entry * entrysz ));
+  return ( rsvdbc  + V->fs_offset + ( fatn * fatsz )  + ( entry * entrysz ));
 }
 
 
@@ -297,7 +297,7 @@ int fat32_write_entry(Volume_t *V, DWORD N, int FatNum, DWORD Value) {
   int   Res;
 //  DWORD Sector, EntryOffset;
   DWORD val;
-  off64_t off;
+  off64_t fatoffset;
 
   Value &= 0x0FFFFFFF;
 
@@ -311,11 +311,11 @@ int fat32_write_entry(Volume_t *V, DWORD N, int FatNum, DWORD Value) {
   
 /*	finding position	*/
 
-  if ((off = fat32_cluster_off(V, N, FatNum)) <= 0) return (int) off;
+  if ((fatoffset = fat32_cluster_off(V, N, FatNum)) <= 0) return (int) fatoffset;
 
 /*	lseek(SEEK_SET)	*/ 
 
-  if ( (Res = lseek64(V->blkDevFd, off, SEEK_SET)) < 0) {
+  if ( (Res = lseek64(V->blkDevFd, fatoffset, SEEK_SET)) < 0) {
     perror("lseek() error in fat32_read_entry()");
     return -1;
   }
@@ -684,7 +684,7 @@ static int libfat_determine_fattype(Volume_t *V) {
         fsi_offset = EFW(V->Bpb.BPB_FSInfo) * EFW(V->Bpb.BPB_BytsPerSec);
         // Only for FAT32
 		fprintf(stderr,"Fsioff: %d, size: %d\n",(int) fsi_offset, sizeof(FSInfo_t));
-        if ( (res = lseek(V->blkDevFd, fsi_offset, SEEK_SET)) != fsi_offset ) { perror("FSI lseek() error"); return -1; }
+        if ( (res = lseek64(V->blkDevFd, ((off64_t)fsi_offset) + V->fs_offset, SEEK_SET)) != fsi_offset ) { perror("FSI lseek() error"); return -1; }
         if ( (res = readn(V->blkDevFd, &(V->Fsi), sizeof(FSInfo_t))) != sizeof(FSInfo_t) ) { perror("FSI readn() error"); return -1; }
 		fprintf(stderr,"--- nxtfree --- :%u\n",EFD(V->Fsi.FSI_Nxt_Free)); 
 		fprintf(stderr,"--- freecnt --- :%u\n",EFD(V->Fsi.FSI_Free_Count)); 		
@@ -727,7 +727,7 @@ static int libfat_initialize_fat(Volume_t *V) {
 	V->fat = malloc(fatsz); // up to 128k of memory for the biggest fat16 ever.
 	memset(V->fat, 0, fatsz);
 
-	if ( (res = lseek64(V->blkDevFd, V->rsvdbytecnt, SEEK_SET)) < 0) {
+	if ( (res = lseek64(V->blkDevFd, V->rsvdbytecnt + V->fs_offset, SEEK_SET)) < 0) {
 		fprintf(stderr,"lseek() error in initialize fat(), off:%d\n",V->rsvdbytecnt);
 		return res;
 	}
@@ -788,7 +788,7 @@ static int libfat_initialize_freelist(Volume_t *V) {
 /*	NB: the pathname must refer to a valid *FAT32* filesystem and must be 	*/
 /*  canonical name															*/
 /*	FAT12/16 NOT SUPPORTED right now										*/
-int	fat_partition_init(Volume_t *V, char *pathname, int flags) {	// todo: add uid and gid;
+int	fat_partition_init(Volume_t *V, char *pathname, int flags, off64_t offset) {	// todo: add uid and gid;
 
     DWORD RootDirSectors = 0;	// Only for FAT12/16
     DWORD FATSz;
@@ -841,9 +841,9 @@ int	fat_partition_init(Volume_t *V, char *pathname, int flags) {	// todo: add ui
 		perror("open() (RDONLY) error");
 #endif
 
-	
-
+	V->fs_offset = offset;
 	V->blkDevFd = fd;
+	lseek64(fd, offset, SEEK_SET);
 
 	if ( (res = readn(fd, &(V->Bpb), sizeof(Bpb_t))) != sizeof(Bpb_t))		//we read directly from da disk (NB FAT32 BPB)
 		perror("BPB readn() error");
@@ -934,7 +934,7 @@ int fat_fat_sync(Volume_t *V) {
     // lets write down FSInfo Sector
 
         fsioff = (int) ((int) EFW(V->Bpb.BPB_FSInfo) * V->bps);
-        res = lseek(V->blkDevFd,  fsioff , SEEK_SET);
+        res = lseek64(V->blkDevFd, ((off64_t)fsioff) + V->fs_offset, SEEK_SET);
         if (res != fsioff ) {
            perror("lseek() error in partition finalize");
           return -1;
@@ -959,7 +959,7 @@ int fat_fat_sync(Volume_t *V) {
 		for (i=0; i < V->numfats; i++) {
 			off=V->rsvdbytecnt + ( i * V->fatsz);
 		
-			if ( (res = lseek64(V->blkDevFd, off, SEEK_SET)) < 0) {
+			if ( (res = lseek64(V->blkDevFd, off + V->fs_offset, SEEK_SET)) < 0) {
 				fprintf(stderr,"lseek() error in partition finalize(), off:%d\n",(int) off);
         		return res;
     		}
@@ -1047,7 +1047,7 @@ int fat_populate_freelist(Volume_t *V) {
 		if (i >= count) {	// we need to fetch another piece of fat.
 			count = (int) MIN(((off64_t) (POPULATE_FREELIST_BUFSZ)), (((lastoff - freeoff) / (off64_t) sizeof(DWORD)) + (off64_t) 1)); // seems ok.
 	
-			seekres = lseek64(V->blkDevFd,(off64_t)  freeoff , SEEK_SET);
+			seekres = lseek64(V->blkDevFd,(off64_t)  freeoff + V->fs_offset, SEEK_SET);
 			if (seekres != freeoff ) {
 				perror("lseek() error in populate_freelist");
 				return -1;
@@ -1237,7 +1237,7 @@ int fetch_entry(Volume_t *V, DWORD *Cluster, DWORD *Offset, LfnEntry_t *D) {
     
 	off = byte_offset(V, *Cluster, *Offset);
 
-    if ( (res = lseek64(V->blkDevFd, off, SEEK_SET)) < 0 ) {
+    if ( (res = lseek64(V->blkDevFd, off + V->fs_offset, SEEK_SET)) < 0 ) {
 		perror("lseek() error in fetch_lfn():");
 		return -1;
     }    
@@ -1350,7 +1350,7 @@ int fetch_next_direntry(Volume_t *V, DirEnt_t *D, DWORD *Cluster, DWORD *Offset)
     
 			off = byte_offset(V, *Cluster, *Offset);
 
-			if ( (res = lseek64(V->blkDevFd, off, SEEK_SET)) < 0 ) {
+			if ( (res = lseek64(V->blkDevFd, off + V->fs_offset, SEEK_SET)) < 0 ) {
 				perror("lseek() error in fetch_lfn():");
 				return -1;
     		}    
@@ -1748,10 +1748,10 @@ int fat_read_data(Volume_t *V, DWORD *Cluster, DWORD *Offset, char *buf, size_t 
 		numbytes = MIN(byteleftperclus, count);		
 		
 		newoffset = *Offset + numbytes;		
-		off = byte_offset(V, *Cluster, *Offset);
+		off = byte_offset(V, *Cluster, *Offset) + V->fs_offset;
 
 		fprintf(stderr,"Cluster: %u, Offset: %u, off: %lld, numbyts:%d\n",*Cluster, *Offset, off, numbytes);
-		seekres = lseek64(V->blkDevFd,(off64_t)  off , SEEK_SET);
+		seekres = lseek(V->blkDevFd, off, SEEK_SET);
 		if (seekres != off ) {
 			perror("lseek() error in read_data");
 			return -1;
@@ -1866,10 +1866,10 @@ int fat_write_data(Volume_t *V, File_t *F, DWORD *Cluster, DWORD *Offset, char *
 		numbytes = MIN(byteleftperclus, cnt);		
 		
 		newoffset = *Offset + numbytes;		
-		off = byte_offset(V, *Cluster, *Offset);
+		off = byte_offset(V, *Cluster, *Offset) + V->fs_offset;
 
 		fprintf(stderr,"Cluster: %u, Offset: %u, off: %lld, numbyts:%d, i:%d\n",*Cluster, *Offset, off, numbytes,i);
-		seekres = lseek64(V->blkDevFd,(off64_t)  off , SEEK_SET);
+		seekres = lseek(V->blkDevFd, off, SEEK_SET);
 		if (seekres != off ) {
 			fprintf(stderr,"lseek() error in read_data\n");
 			return -1;
@@ -1980,8 +1980,8 @@ int fat_update_file(File_t *F) {
 
 	if (F == NULL) return 0;
 	
-	seekres = lseek64(F->V->blkDevFd,(off64_t)  F->D.direntoff , SEEK_SET);
-	if (seekres != F->D.direntoff ) {
+	seekres = lseek64(F->V->blkDevFd, ((off64_t)F->D.direntoff) + F->V->fs_offset , SEEK_SET);
+	if (seekres != F->D.direntoff + F->V->fs_offset ) {
 		perror("lseek() error in update file");
 		return -1;
 	}
@@ -2229,7 +2229,7 @@ static off64_t fat_find_lfnslots(Volume_t *V, File_t *dir, DWORD *Cluster , DWOR
   	off64_t res64;
 	cluster = alloca(EFW(V->Bpb.BPB_RootEntCnt) * 32 ); // size of the root directory in the volume
 
-	if ((res64 = lseek64(V->blkDevFd, V->rootdir16off ,SEEK_SET)) != V->rootdir16off) {
+	if ((res64 = lseek64(V->blkDevFd, V->rootdir16off + V->fs_offset,SEEK_SET)) != V->rootdir16off + + V->fs_offset) {
 		fprintf(stderr,"find lfn slots error : lseek()\n"); return -1;}
 	if ((res = readn(V->blkDevFd,cluster, (EFW(V->Bpb.BPB_RootEntCnt) * 32) )) != (EFW(V->Bpb.BPB_RootEntCnt) * 32)) {
 		fprintf(stderr,"find lfn slots error : readn()\n"); return -1;}
@@ -2398,7 +2398,7 @@ int fat_create(Volume_t *V, File_t *parent, char *filename , DirEntry_t *sfn, mo
 	} else { //FAT12/16 root
 		off64_t res64;
 		res64 = byte_offset(V,clus, off);	// clus have been set to 1 by find_lfnslots to indicate fat12/16 root dir
-		if ((res64 = lseek(V->blkDevFd, res64, SEEK_SET)) != byte_offset(V,clus, off)) {
+		if ((res64 = lseek(V->blkDevFd, res64 + V->fs_offset, SEEK_SET)) != byte_offset(V,clus, off) + V->fs_offset) {
 			fprintf(stderr,"lseek error in fat_create(). res: %d,line: %d\n",res,__LINE__); return -1; }		
 		if ((res = writen(V->blkDevFd,(char *) entry,((slotnum + 1) * sizeof(DirEntry_t)))) != ((slotnum + 1) * sizeof(DirEntry_t))) {
 			fprintf(stderr,"write error in fat_create(). res: %d,line: %d\n",res,__LINE__); return -1; }
@@ -2550,7 +2550,7 @@ static int fat_real_delete(File_t *F, int dir, int flag) {
 	} else { // FAT12/16
 		off64_t res64;
 		res64 = byte_offset(F->V,Cluster, Offset);
-		if ((res64 = lseek(F->V->blkDevFd, res64, SEEK_SET)) != byte_offset(F->V,Cluster, Offset)) {
+		if ((res64 = lseek(F->V->blkDevFd, res64 + F->V->fs_offset, SEEK_SET)) != byte_offset(F->V,Cluster, Offset)) {
 			fprintf(stderr,"lseek error in fat_delete(). res: %d,line: %d\n",res,__LINE__); return -1; }		
 		if ((res = writen(F->V->blkDevFd,(char *) D.entry, (D.len * sizeof(DirEntry_t)))) != (D.len * sizeof(DirEntry_t))) {
 			fprintf(stderr,"write error in fat_delete(). res: %d,line: %d\n",res,__LINE__); return -1; }		

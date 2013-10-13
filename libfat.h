@@ -40,7 +40,7 @@ struct DirEntry_t;
 #define FAT_WRITE_ACCESS_FLAG 1
 
 /*	Prototypes			*/
-int fat_partition_init(Volume_t *V, char *pathname, int flags);
+int fat_partition_init(Volume_t *V, char *pathname, int flags, off64_t offset);
 int fat_partition_finalize(Volume_t *V);
 
 int fat_read_data(Volume_t *V, DWORD *Cluster, DWORD *Offset, char *buf, size_t count );

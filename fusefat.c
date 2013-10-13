@@ -328,6 +328,17 @@ static struct fuse_operations fusefat_oper = {
 	.flush  = fusefat_flush
 };
 
+struct fusefat_config {
+     off64_t offset;
+};
+
+#define FUSEFAT_OPT(t, p, v) { t, offsetof(struct fusefat_config, p), v }
+
+static struct fuse_opt fusefat_opts[] = {
+     FUSEFAT_OPT("offset=%i",          offset, 0),
+     FUSE_OPT_END
+};
+
 static void rearrangeargv(int argc, char *argv[])
 {
 	int i,sourcearg,dasho;
@@ -363,6 +374,7 @@ int main(int argc, char *argv[])
 		v2f_usage(argv[0],&fusefat_oper);
 		return -ENODEV;
 	}
+
 	v2f_rearrangeargv(argc,argv);
 	pathname=argv[1];
 	argv[1]=argv[0];
@@ -372,16 +384,21 @@ int main(int argc, char *argv[])
 		return -EINVAL;
 
 	if (rorwplus == FLRWPLUS) fprintf(stderr,"volume mounted in rw mode\n");
+
+	struct fuse_args args = FUSE_ARGS_INIT(--argc, ++argv);
+	struct fusefat_config conf;
+	if (fuse_opt_parse(&args, &conf, fusefat_opts, 0) == -1)
+        return -1;
 	
 	if ((res = fat_partition_init(V,pathname,
-					(rorwplus==FLRWPLUS)?FAT_WRITE_ACCESS_FLAG:0)) < 0) return -1;		
+					(rorwplus==FLRWPLUS)?FAT_WRITE_ACCESS_FLAG:0, conf.offset)) < 0) return -1;
 
 	//   umask(0);
 #if ( FUSE_MINOR_VERSION <= 5 )
 	init_data=V;
-	res =  fuse_main(--argc, ++argv, &fusefat_oper);
+	res =  fuse_main(args.argc, args.argv, &fusefat_oper);
 #else
-	res =  fuse_main(--argc, ++argv, &fusefat_oper, V);
+	res =  fuse_main(args.argc, args.argv, &fusefat_oper, V);
 #endif
 
 	res = fat_partition_finalize(V);
